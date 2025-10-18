@@ -4,7 +4,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
-from langchain.memory import ConversationSummaryBufferMemory
+from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationChain
 from langchain.prompts import (
     ChatPromptTemplate,
@@ -55,11 +55,10 @@ if "messages" not in st.session_state:
 
     # OpenAI & LLM
     st.session_state.openai_obj = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    st.session_state.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5)
-    st.session_state.memory = ConversationSummaryBufferMemory(
-        llm=st.session_state.llm,
-        max_token_limit=1000,
-        return_messages=True
+    st.session_state.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+    st.session_state.memory = ConversationBufferMemory(
+        return_messages=True,
+        memory_key="history",  # ← MessagesPlaceholder("history") と一致させる
     )
 
     # 日常英会話チェーン
