@@ -57,7 +57,7 @@ if "messages" not in st.session_state:
     st.session_state.dictation_first_flg = True
     st.session_state.chat_open_flg = False
     st.session_state.dictation_chat_message = ""
-    st.session_state.dictation_tts_bytes = None  # ← TTSをバイトで保持
+    st.session_state.dictation_tts_bytes = None  # ← 必ずWAVの生バイトを入れる
 
     # OpenAI & LangChain
     st.session_state.openai_obj = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -101,14 +101,14 @@ with col3:
     if st.session_state.mode != st.session_state.pre_mode:
         st.session_state.start_flg = False
 
-        # ディクテ用の状態をクリア
+        # ディクテの状態をリセット
         st.session_state.dictation_flg = False
         st.session_state.dictation_count = 0
         st.session_state.chat_open_flg = False
         st.session_state.dictation_chat_message = ""
         st.session_state.dictation_tts_bytes = None
 
-        # シャドーイング用の状態をクリア
+        # シャドーイングの状態をリセット
         st.session_state.shadowing_flg = False
         st.session_state.shadowing_count = 0
         st.session_state.shadowing_in_progress = False
@@ -182,10 +182,28 @@ if st.session_state.start_flg:
         # まだ入力を受け付けていない ⇒ 問題出題フェーズ
         if not st.session_state.chat_open_flg:
             with st.spinner("問題文生成中..."):
-                st.session_state.problem, wav_bytes = ft.create_problem_and_play_audio()
-                st.session_state.dictation_tts_bytes = wav_bytes  # セッションに保持
+                # ← functions は (problem, llm_response_audio) を返す
+                #    llm_response_audio.content は MP3 バイトなので、WAVに変換して保持する
+                st.session_state.problem, llm_resp = ft.create_problem_and_play_audio()
 
-            # 表示（音声はバイトからそのまま再生）
+                st.session_state.dictation_tts_bytes = None
+                if llm_resp is not None:
+                    tmp_wav = os.path.join(
+                        ct.AUDIO_OUTPUT_DIR, f"dict_{int(time.time())}.wav"
+                    )
+                    try:
+                        # MP3 -> WAV へ変換して一旦保存
+                        ft.save_to_wav(llm_resp.content, tmp_wav)
+                        # WAV を生バイトとして読み込み、セッションに保持
+                        with open(tmp_wav, "rb") as f:
+                            st.session_state.dictation_tts_bytes = f.read()
+                    finally:
+                        try:
+                            os.remove(tmp_wav)
+                        except Exception:
+                            pass
+
+            # 出題音声の再生
             if st.session_state.dictation_tts_bytes:
                 st.audio(st.session_state.dictation_tts_bytes, format="audio/wav")
 
@@ -198,10 +216,9 @@ if st.session_state.start_flg:
             if not st.session_state.dictation_chat_message:
                 st.stop()
 
-            # 出題した英文（視認用）とユーザ入力の表示
+            # 出題文と音声（必要なら再生）・ユーザ入力の表示
             with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
                 st.markdown(st.session_state.problem)
-                # もう一度音声を聴きたい場合は残しておく
                 if st.session_state.dictation_tts_bytes:
                     st.audio(st.session_state.dictation_tts_bytes, format="audio/wav")
 
@@ -302,12 +319,9 @@ if st.session_state.start_flg:
                 st.session_state.problem = custom_sentence
             else:
                 with st.spinner("問題文生成中..."):
-                    p, wav_bytes = ft.create_problem_and_play_audio()
+                    p, llm_resp = ft.create_problem_and_play_audio()
                     st.session_state.problem = p
-                    # 1回目の再生（生成済みバイト）
-                    if wav_bytes:
-                        st.info("🔊【1回目】聞き取り練習中...")
-                        st.audio(wav_bytes, format="audio/wav")
+                    # 1回目の再生は functions 側で実行済み
 
             # 表示
             if st.session_state.show_text_flg:
