@@ -1,27 +1,23 @@
 # functions.py
 # ------------------------------------------------------------
-# 共通関数群（Streamlit Cloud対応版：PyAudioは使わず、再生は st.audio）
+# 共通関数群（Streamlit Cloud対応版：PyAudio不使用）
+#  - 音声の再生は st.audio を用いてブラウザ側で行います
 # ------------------------------------------------------------
 
-from __future__ import annotations
+from pydub import AudioSegment, silence
+import imageio_ffmpeg  # ← スペースなし
 
-import io
+# これを追加（pydub に imageio-ffmpeg のバイナリを使わせる）
+AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+
 import os
+import io
 import time
 import hashlib
-from typing import Any
 
 import streamlit as st
 from audiorecorder import audiorecorder
 
-# --- 音声処理（pydub + imageio-ffmpeg を使用してCloudでも動くように） ---
-from pydub import AudioSegment, silence
-import imageio_ffmpeg
-
-# pydub が使う ffmpeg バイナリのパスを imageio-ffmpeg から拝借
-AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
-
-# --- LangChain (会話チェーン生成に使用) ---
 from langchain.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
@@ -45,28 +41,27 @@ os.makedirs(ct.AUDIO_OUTPUT_DIR, exist_ok=True)
 # =========================================================
 @st.cache_data(show_spinner=False)
 def cached_transcribe(file_bytes: bytes) -> str:
-    """Whisper 文字起こしをバイト列ハッシュでキャッシュして高速化"""
+    """Whisper 文字起こし結果をバイト列ハッシュでキャッシュ保存"""
     key = hashlib.md5(file_bytes).hexdigest()
     cache_path = f"{ct.AUDIO_INPUT_DIR}/cache_{key}.txt"
 
-    # キャッシュヒット
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    # Whisper に渡す一時ファイルを作成
-    tmp_wav = "tmp_whisper.wav"
-    with open(tmp_wav, "wb") as f:
+    # Whisper に投げる一時 wav
+    tmp = "tmp.wav"
+    with open(tmp, "wb") as f:
         f.write(file_bytes)
 
     try:
-        with open(tmp_wav, "rb") as f:
+        with open(tmp, "rb") as f:
             transcript = st.session_state.openai_obj.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
                 language="en",
             )
-        text = (transcript.text or "").strip()
+        text = transcript.text or ""
         with open(cache_path, "w", encoding="utf-8") as f:
             f.write(text)
         return text
@@ -74,9 +69,9 @@ def cached_transcribe(file_bytes: bytes) -> str:
         st.error(f"Whisper処理でエラー: {e}")
         return ""
     finally:
-        if os.path.exists(tmp_wav):
+        if os.path.exists(tmp):
             try:
-                os.remove(tmp_wav)
+                os.remove(tmp)
             except Exception:
                 pass
 
@@ -99,10 +94,10 @@ def record_audio(audio_input_file_path: str) -> None:
         st.warning("音声が検出されませんでした。もう一度お試しください。")
         st.stop()
 
-    # そのまま保存
+    # 保存
     audio.export(audio_input_file_path, format="wav")
 
-    # 無音区間をざっくりトリム（失敗しても続行）
+    # 無音区間をトリム（失敗しても致命ではない）
     try:
         sound = AudioSegment.from_wav(audio_input_file_path)
         non_silent = silence.detect_nonsilent(
@@ -120,11 +115,10 @@ def record_audio(audio_input_file_path: str) -> None:
 # 文字起こし
 # =========================================================
 def transcribe_audio(audio_input_file_path: str):
-    """音声ファイル → Whisper でテキストに。互換の簡易Resultオブジェクトを返す"""
+    """音声ファイル → Whisper でテキスト変換して返す（簡易 Result オブジェクト）"""
     try:
         with open(audio_input_file_path, "rb") as f:
             file_bytes = f.read()
-
         text = cached_transcribe(file_bytes)
 
         # 入力ファイルは使い終わったら削除
@@ -148,48 +142,14 @@ def transcribe_audio(audio_input_file_path: str):
 
 
 # =========================================================
-# 音声ファイル保存（mp3→wav）: どんな戻り値でも受け取れる堅牢版
+# 音声ファイル保存（mp3→wav）
 # =========================================================
-def save_to_wav(resp_or_bytes: Any, audio_output_file_path: str) -> None:
-    """OpenAI TTSの戻り値 or 生バイトを受け取り、mp3→wavに変換して保存する。
-    - 戻り値の型差異（.content / .read() / .getvalue() / bytes）を吸収
-    """
-    if resp_or_bytes is None:
-        st.error("TTSレスポンスが None でした。")
-        return
-
-    data: bytes | None = None
-
-    if isinstance(resp_or_bytes, (bytes, bytearray)):
-        data = bytes(resp_or_bytes)
-    else:
-        # content 属性（OpenAI 1.x の一部環境）
-        data = getattr(resp_or_bytes, "content", None)
-
-        # BytesIO など
-        if data is None and hasattr(resp_or_bytes, "getvalue"):
-            try:
-                data = resp_or_bytes.getvalue()
-            except Exception:
-                pass
-
-        # Response ライク
-        if data is None and hasattr(resp_or_bytes, "read"):
-            try:
-                data = resp_or_bytes.read()
-            except Exception:
-                pass
-
-    if not data:
-        st.error("TTSレスポンスから音声バイトを取得できませんでした。")
-        return
-
-    # mp3 を一時保存 → wav に変換
+def save_to_wav(llm_response_audio: bytes, audio_output_file_path: str) -> None:
+    """OpenAI TTS の mp3バイト列を一時保存→wavに変換して保存"""
     tmp_mp3 = f"{ct.AUDIO_OUTPUT_DIR}/temp_{int(time.time())}.mp3"
     try:
         with open(tmp_mp3, "wb") as f:
-            f.write(data)
-
+            f.write(llm_response_audio)
         audio_mp3 = AudioSegment.from_file(tmp_mp3, format="mp3")
         audio_mp3.export(audio_output_file_path, format="wav")
     finally:
@@ -297,8 +257,7 @@ def create_problem_and_play_audio():
         audio_output_file_path = (
             f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
         )
-        # ← そのまま渡す（.content は付けない）
-        save_to_wav(llm_response_audio, audio_output_file_path)
+        save_to_wav(llm_response_audio.content, audio_output_file_path)
         # ブラウザで1回再生（自動削除）
         play_wav(audio_output_file_path, st.session_state.speed)
         return problem, llm_response_audio
