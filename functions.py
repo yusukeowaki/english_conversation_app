@@ -2,18 +2,19 @@
 # ------------------------------------------------------------
 # 共通関数群（Streamlit Cloud対応版：PyAudio不使用）
 #  - 音声の再生は st.audio を用いてブラウザ側で行います
+#  - シャドーイングの三重再生を解消するため、文だけ生成する関数を追加
 # ------------------------------------------------------------
-
-from pydub import AudioSegment, silence
-import imageio_ffmpeg  # ← スペースなし
-
-# これを追加（pydub に imageio-ffmpeg のバイナリを使わせる）
-AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
 
 import os
 import io
 import time
 import hashlib
+
+from pydub import AudioSegment, silence
+import imageio_ffmpeg  # ← スペースなし
+
+# pydub に imageio-ffmpeg のバイナリを使わせる
+AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
 
 import streamlit as st
 from audiorecorder import audiorecorder
@@ -41,7 +42,10 @@ os.makedirs(ct.AUDIO_OUTPUT_DIR, exist_ok=True)
 # =========================================================
 @st.cache_data(show_spinner=False)
 def cached_transcribe(file_bytes: bytes) -> str:
-    """Whisper 文字起こし結果をバイト列ハッシュでキャッシュ保存"""
+    """
+    Whisper 文字起こし結果をバイト列ハッシュでキャッシュ保存
+    Returns: テキスト（失敗時は空文字）
+    """
     key = hashlib.md5(file_bytes).hexdigest()
     cache_path = f"{ct.AUDIO_INPUT_DIR}/cache_{key}.txt"
 
@@ -61,7 +65,7 @@ def cached_transcribe(file_bytes: bytes) -> str:
                 file=f,
                 language="en",
             )
-        text = transcript.text or ""
+        text = getattr(transcript, "text", "") or ""
         with open(cache_path, "w", encoding="utf-8") as f:
             f.write(text)
         return text
@@ -166,7 +170,7 @@ def save_to_wav(llm_response_audio: bytes, audio_output_file_path: str) -> None:
 def play_wav(audio_output_file_path: str, speed: float = 1.0, keep_file: bool = False):
     """
     Streamlit のオーディオプレイヤーで再生する版。
-    - speed != 1.0 のときはフレームレート変更で速度調整
+    - speed != 1.0 のときはフレームレート変更で速度調整（ピッチは変化します）
     - keep_file=True のときは再生後にファイルを残す（同じ音声を連続再生したいとき用）
     """
     try:
@@ -229,12 +233,29 @@ def convert_level_to_cefr(level_jp: str) -> str:
 
 
 # =========================================================
-# 問題生成 + 読み上げ（互換用）
+# 新規：文だけ生成（再生しない）→ シャドーイングの三重再生を解消
+# =========================================================
+def generate_problem_only() -> str:
+    """
+    ユーザーのレベルに応じた英文を1つ生成（TTS再生はしない）
+    - シャドーイング（MODE_2）では本関数を使用することで再生は2回のみになる
+    """
+    user_level = st.session_state.get("englv", "中級者")
+    cefr_level = convert_level_to_cefr(user_level)
+    system_template = ct.SYSTEM_TEMPLATE_CREATE_PROBLEM.format(level=cefr_level)
+    chain = create_chain(system_template)
+    sentence = chain.predict(input="Generate one English sentence for practice.")
+    return sentence.strip().replace('"', "")
+
+
+# =========================================================
+# 問題生成 + 読み上げ（ディクテーション用に互換維持）
 # =========================================================
 def create_problem_and_play_audio():
     """
     ユーザーのレベルに応じた英文を1つ生成し、TTSで1回再生して返す。
-    既存コード互換用。新しい main.py では文生成とTTSを別で行ってもOK。
+    - ディクテーション（MODE_3）用の既存互換関数として残す
+    - シャドーイング（MODE_2）では使用せず generate_problem_only() を使う
     """
     user_level = st.session_state.get("englv", "中級者")
     cefr_level = convert_level_to_cefr(user_level)
@@ -247,20 +268,21 @@ def create_problem_and_play_audio():
     problem = chain.predict(input="Generate one English sentence for practice.")
     problem = problem.strip().replace('"', "")
 
-    # TTS音声生成と再生
+    # TTS音声生成と再生（戻り値の互換性に配慮）
     try:
-        llm_response_audio = st.session_state.openai_obj.audio.speech.create(
+        resp = st.session_state.openai_obj.audio.speech.create(
             model="tts-1",
             voice="alloy",
             input=problem,
         )
+        audio_bytes = getattr(resp, "content", resp)
         audio_output_file_path = (
             f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
         )
-        save_to_wav(llm_response_audio.content, audio_output_file_path)
+        save_to_wav(audio_bytes, audio_output_file_path)
         # ブラウザで1回再生（自動削除）
         play_wav(audio_output_file_path, st.session_state.speed)
-        return problem, llm_response_audio
+        return problem, resp
     except Exception as e:
         st.error(f"TTS音声生成エラー: {e}")
         return problem, None

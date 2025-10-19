@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationChain
+
 from langchain.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
@@ -32,10 +32,16 @@ st.markdown(f"## {ct.APP_NAME}")
 # ==============================
 # セッション初期化
 # ==============================
-if "messages" not in st.session_state:
+if "initialized" not in st.session_state:
+    st.session_state.initialized = True
+
+    # UI / 状態
     st.session_state.messages = []
     st.session_state.start_flg = False
     st.session_state.pre_mode = ""
+    st.session_state.speed = 1.0
+
+    # シャドーイング
     st.session_state.shadowing_flg = False
     st.session_state.shadowing_button_flg = False
     st.session_state.shadowing_count = 0
@@ -44,21 +50,32 @@ if "messages" not in st.session_state:
     st.session_state.shadowing_evaluation_first_flg = True
     st.session_state.shadowing_in_progress = False
     st.session_state.shadowing_eval_target = ""
+
+    # ディクテーション
     st.session_state.dictation_flg = False
     st.session_state.dictation_button_flg = False
     st.session_state.dictation_count = 0
     st.session_state.dictation_first_flg = True
     st.session_state.dictation_chat_message = ""
     st.session_state.dictation_evaluation_first_flg = True
+
+    # 共通
     st.session_state.chat_open_flg = False
     st.session_state.problem = ""
+    st.session_state.englv = ct.ENGLISH_LEVEL_OPTION[1]  # 既定: 中級者
 
-    # OpenAI & LLM
-    st.session_state.openai_obj = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    # OpenAI API キー
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        st.error("OPENAI_API_KEY が見つかりません。.env を確認してください。")
+        st.stop()
+
+    # OpenAI & LangChain
+    st.session_state.openai_obj = OpenAI(api_key=api_key)
     st.session_state.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
     st.session_state.memory = ConversationBufferMemory(
         return_messages=True,
-        memory_key="history",  # ← MessagesPlaceholder("history") と一致させる
+        memory_key="history",  # MessagesPlaceholder("history") と一致
     )
 
     # 日常英会話チェーン
@@ -72,10 +89,9 @@ if "messages" not in st.session_state:
 col1, col2, col3, col4 = st.columns([2, 2, 3, 3])
 
 with col1:
-    if st.session_state.start_flg:
-        st.button("開始", use_container_width=True, type="primary")
-    else:
-        st.session_state.start_flg = st.button("開始", use_container_width=True, type="primary")
+    clicked_start = st.button("開始", use_container_width=True, type="primary")
+    if clicked_start:
+        st.session_state.start_flg = True
 
 with col2:
     st.session_state.speed = st.selectbox(
@@ -112,17 +128,18 @@ with col4:
     st.session_state.englv = st.selectbox(
         label="英語レベル",
         options=ct.ENGLISH_LEVEL_OPTION,
+        index=ct.ENGLISH_LEVEL_OPTION.index(st.session_state.get("englv", "中級者")),
         label_visibility="collapsed"
     )
 
-with st.chat_message("assistant", avatar="images/ai_icon.jpg"):
+with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
     st.markdown("こちらは生成AIによる音声英会話の練習アプリです。何度も繰り返し練習し、英語力をアップさせましょう。")
     st.markdown("**【操作説明】**")
     st.success("""
-- モードと再生速度を選択し、「英会話開始」ボタンを押して英会話を始めましょう。
+- モードと再生速度を選択し、「開始」ボタンで練習を始めます。
 - モードは「日常英会話」「シャドーイング」「ディクテーション」から選べます。
 - 発話後、5秒間沈黙することで音声入力が完了します。
-- 「一時中断」ボタンを押すことで、英会話を一時中断できます。
+- 「一時中断」ボタン相当の挙動は、開始ボタンを再押下しないことで代替できます。
 """)
 st.divider()
 
@@ -131,15 +148,15 @@ st.divider()
 # ==============================
 for message in st.session_state.messages:
     if message["role"] == "assistant":
-        with st.chat_message("assistant", avatar="images/ai_icon.jpg"):
+        with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
             st.markdown(message["content"])
     elif message["role"] == "user":
-        with st.chat_message("user", avatar="images/user_icon.jpg"):
+        with st.chat_message("user", avatar=ct.USER_ICON_PATH):
             st.markdown(message["content"])
     else:
         st.divider()
 
-# 実行ボタン
+# 実行補助ボタン（必要に応じて）
 if st.session_state.shadowing_flg:
     st.session_state.shadowing_button_flg = st.button("シャドーイング開始")
 if st.session_state.dictation_flg:
@@ -154,7 +171,7 @@ if st.session_state.dictation_chat_message and not st.session_state.chat_open_fl
     st.stop()
 
 # ==============================
-# 「開始」ボタン押下時の処理
+# 「開始」ボタン押下後の処理
 # ==============================
 if st.session_state.start_flg:
 
@@ -171,12 +188,12 @@ if st.session_state.start_flg:
         # まだ入力を受け付けていない＝問題文の提示フェーズ
         if not st.session_state.chat_open_flg:
             with st.spinner('問題文生成中...'):
-                st.session_state.problem, llm_response_audio = ft.create_problem_and_play_audio()
+                st.session_state.problem, _ = ft.create_problem_and_play_audio()
             st.session_state.chat_open_flg = True
             st.session_state.dictation_flg = False
             st.rerun()
 
-        # ここから回答入力後の評価フェーズ
+        # 回答入力後の評価フェーズ
         else:
             if not st.session_state.dictation_chat_message:
                 st.stop()
@@ -222,13 +239,14 @@ if st.session_state.start_flg:
 
         with st.spinner("回答の音声読み上げ準備中..."):
             llm_response = st.session_state.chain_basic_conversation.predict(input=audio_input_text)
-            llm_response_audio = st.session_state.openai_obj.audio.speech.create(
+            resp = st.session_state.openai_obj.audio.speech.create(
                 model="tts-1",
                 voice="alloy",
                 input=llm_response
             )
+            audio_bytes = getattr(resp, "content", resp)
             audio_output_file_path = f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
-            ft.save_to_wav(llm_response_audio.content, audio_output_file_path)
+            ft.save_to_wav(audio_bytes, audio_output_file_path)
 
         ft.play_wav(audio_output_file_path, speed=st.session_state.speed)
 
@@ -268,7 +286,8 @@ if st.session_state.start_flg:
                 st.session_state.problem = custom_sentence
             else:
                 with st.spinner('問題文生成中...'):
-                    st.session_state.problem, _ = ft.create_problem_and_play_audio()
+                    # ★ 三重再生解消：ここでは再生しない版を使用
+                    st.session_state.problem = ft.generate_problem_only()
 
             # 評価対象を固定
             st.session_state.shadowing_eval_target = st.session_state.problem
@@ -280,14 +299,15 @@ if st.session_state.start_flg:
             if not st.session_state.messages or st.session_state.messages[-1].get("content") != f"**練習文:** {st.session_state.problem}":
                 st.session_state.messages.append({"role": "assistant", "content": f"**練習文:** {st.session_state.problem}"})
 
-            # TTS 2回再生
-            tts_audio = st.session_state.openai_obj.audio.speech.create(
+            # TTS 2回再生（聞き取り→シャドーイング）
+            resp1 = st.session_state.openai_obj.audio.speech.create(
                 model="tts-1",
                 voice="alloy",
                 input=st.session_state.problem
             )
+            audio_bytes1 = getattr(resp1, "content", resp1)
             audio_output_file_path = f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
-            ft.save_to_wav(tts_audio.content, audio_output_file_path)
+            ft.save_to_wav(audio_bytes1, audio_output_file_path)
 
             st.info("🔊【1回目】聞き取り練習中...")
             ft.play_wav(audio_output_file_path, st.session_state.speed, keep_file=True)
