@@ -60,6 +60,7 @@ if "initialized" not in st.session_state:
     st.session_state.dictation_first_flg = True
     st.session_state.dictation_chat_message = ""
     st.session_state.dictation_evaluation_first_flg = True
+    st.session_state.dictation_show_text = False  # ディクテは原則“非表示”（任意で表示可）
 
     # 共通
     st.session_state.chat_open_flg = False
@@ -134,6 +135,12 @@ with col4:
         label_visibility="collapsed"
     )
 
+# ディクテーション時だけ、問題文表示の任意トグル
+if st.session_state.mode == ct.MODE_3:
+    st.session_state.dictation_show_text = st.checkbox(
+        "問題文を表示（ディクテーション）", value=False
+    )
+
 # 初回のみ操作説明を表示
 if not st.session_state.intro_shown:
     with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
@@ -195,12 +202,13 @@ if st.session_state.start_flg:
             with st.spinner('問題文生成中...'):
                 st.session_state.problem, _ = ft.create_problem_and_play_audio()
 
-            # 生成した英文を即表示（可視化）
-            with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
-                st.markdown(st.session_state.problem)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": st.session_state.problem}
-            )
+            # 生成した英文は、ディクテーションでは原則“非表示”（任意で表示）
+            if st.session_state.dictation_show_text:
+                with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+                    st.markdown(st.session_state.problem)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": st.session_state.problem}
+                )
 
             # 入力を受け付ける状態に遷移（rerunは行わず、ここで一旦停止して入力待ち）
             st.session_state.chat_open_flg = True
@@ -212,12 +220,15 @@ if st.session_state.start_flg:
             if not st.session_state.dictation_chat_message:
                 st.stop()
 
-            with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
-                st.markdown(st.session_state.problem)
+            # 評価時の問題文表示は、任意トグルに従う
+            if st.session_state.dictation_show_text:
+                with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+                    st.markdown(st.session_state.problem)
+                st.session_state.messages.append({"role": "assistant", "content": st.session_state.problem})
+
             with st.chat_message("user", avatar=ct.USER_ICON_PATH):
                 st.markdown(st.session_state.dictation_chat_message)
 
-            st.session_state.messages.append({"role": "assistant", "content": st.session_state.problem})
             st.session_state.messages.append({"role": "user", "content": st.session_state.dictation_chat_message})
 
             with st.spinner('評価結果の生成中...'):
@@ -242,7 +253,6 @@ if st.session_state.start_flg:
     # ---------- モード：日常英会話 ----------
     if st.session_state.mode == ct.MODE_1:
         audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
-        audio_input_file_path = audio_input_file_path.replace("}", "")  # 万一の波括弧混入回避
         ft.record_audio(audio_input_file_path)
 
         with st.spinner('音声入力をテキストに変換中...'):
@@ -335,7 +345,6 @@ if st.session_state.start_flg:
         # 録音→文字起こし（進行中）
         if st.session_state.shadowing_in_progress:
             audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
-            audio_input_file_path = audio_input_file_path.replace("}", "")
             ft.record_audio(audio_input_file_path)
 
             with st.spinner('音声入力をテキストに変換中...'):
