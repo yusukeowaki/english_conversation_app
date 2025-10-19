@@ -1,3 +1,4 @@
+# main.py
 import os
 import time
 import streamlit as st
@@ -40,6 +41,7 @@ if "initialized" not in st.session_state:
     st.session_state.start_flg = False
     st.session_state.pre_mode = ""
     st.session_state.speed = 1.0
+    st.session_state.intro_shown = False
 
     # シャドーイング
     st.session_state.shadowing_flg = False
@@ -132,15 +134,18 @@ with col4:
         label_visibility="collapsed"
     )
 
-with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
-    st.markdown("こちらは生成AIによる音声英会話の練習アプリです。何度も繰り返し練習し、英語力をアップさせましょう。")
-    st.markdown("**【操作説明】**")
-    st.success("""
+# 初回のみ操作説明を表示
+if not st.session_state.intro_shown:
+    with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+        st.markdown("こちらは生成AIによる音声英会話の練習アプリです。何度も繰り返し練習し、英語力をアップさせましょう。")
+        st.markdown("**【操作説明】**")
+        st.success("""
 - モードと再生速度を選択し、「開始」ボタンで練習を始めます。
 - モードは「日常英会話」「シャドーイング」「ディクテーション」から選べます。
 - 発話後、5秒間沈黙することで音声入力が完了します。
 - 「一時中断」ボタン相当の挙動は、開始ボタンを再押下しないことで代替できます。
 """)
+    st.session_state.intro_shown = True
 st.divider()
 
 # ==============================
@@ -189,9 +194,18 @@ if st.session_state.start_flg:
         if not st.session_state.chat_open_flg:
             with st.spinner('問題文生成中...'):
                 st.session_state.problem, _ = ft.create_problem_and_play_audio()
+
+            # 生成した英文を即表示（可視化）
+            with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+                st.markdown(st.session_state.problem)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": st.session_state.problem}
+            )
+
+            # 入力を受け付ける状態に遷移（rerunは行わず、ここで一旦停止して入力待ち）
             st.session_state.chat_open_flg = True
             st.session_state.dictation_flg = False
-            st.rerun()
+            st.stop()
 
         # 回答入力後の評価フェーズ
         else:
@@ -228,6 +242,7 @@ if st.session_state.start_flg:
     # ---------- モード：日常英会話 ----------
     if st.session_state.mode == ct.MODE_1:
         audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
+        audio_input_file_path = audio_input_file_path.replace("}", "")  # 万一の波括弧混入回避
         ft.record_audio(audio_input_file_path)
 
         with st.spinner('音声入力をテキストに変換中...'):
@@ -320,6 +335,7 @@ if st.session_state.start_flg:
         # 録音→文字起こし（進行中）
         if st.session_state.shadowing_in_progress:
             audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
+            audio_input_file_path = audio_input_file_path.replace("}", "")
             ft.record_audio(audio_input_file_path)
 
             with st.spinner('音声入力をテキストに変換中...'):
